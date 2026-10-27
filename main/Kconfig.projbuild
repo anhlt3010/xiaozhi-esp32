@@ -950,6 +950,16 @@ config JC4827W543_EXTERNAL_AMP
         what a stock unit uses. Enable this only if you drive an external I2S
         amplifier from the expansion headers instead.
 
+config LCD_FULLSCREEN_EMOJI
+    bool "Show the emotion image over the whole screen (default mode only)"
+    depends on USE_DEFAULT_MESSAGE_STYLE
+    default y if BOARD_TYPE_XINGZHI_CUBE_1_54TFT_WIFI
+    default n
+    help
+        When enabled, the emotion image fills the screen and the status bar,
+        notifications and subtitles stay hidden. Only the default message style
+        supports it.
+
 config USE_MULTILINE_CHAT_MESSAGE
     bool "Use multiline chat message display (default mode only)"
     depends on USE_DEFAULT_MESSAGE_STYLE

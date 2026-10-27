@@ -4,6 +4,7 @@
 #include "gif/lvgl_gif.h"
 #include "lvgl_display.h"
 
+#include <sdkconfig.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <atomic>
@@ -32,8 +33,14 @@ protected:
     esp_timer_handle_t preview_timer_ = nullptr;
     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
     bool hide_subtitle_ = false;  // Control whether to hide chat messages/subtitles
+#ifdef CONFIG_LCD_FULLSCREEN_EMOJI
+    bool fullscreen_emoji_ = true;  // Emoji fills the screen; status bar and subtitles stay hidden
+#else
+    bool fullscreen_emoji_ = false;
+#endif
 
     void InitializeLcdThemes();
+    void ApplyFullscreenEmoji();
     virtual bool Lock(int timeout_ms = 0) override;
     virtual void Unlock() override;
 
@@ -55,6 +62,10 @@ public:
 
     // Set whether to hide chat messages/subtitles
     virtual void SetHideSubtitle(bool hide) override;
+
+    // Show the emotion image over the whole screen, with no status bar, notification or subtitle.
+    // Classic layout only. May be called before SetupUI().
+    void SetFullscreenEmoji(bool enable);
 };
 
 // SPI LCD display

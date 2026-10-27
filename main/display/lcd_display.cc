@@ -1077,6 +1077,8 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_text_color(low_battery_label_, lv_color_white(), 0);
     lv_obj_center(low_battery_label_);
     lv_obj_add_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
+
+    ApplyFullscreenEmoji();
 }
 
 void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
@@ -1136,7 +1138,7 @@ void LcdDisplay::SetChatMessage(const char* role, const char* content) {
     if (bottom_bar_ != nullptr) {
         if (content == nullptr || content[0] == '\0') {
             lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
-        } else if (!hide_subtitle_) {
+        } else if (!hide_subtitle_ && !fullscreen_emoji_) {
             lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
         }
     }
@@ -1425,7 +1427,7 @@ void LcdDisplay::SetHideSubtitle(bool hide) {
 
     // Immediately update UI visibility based on the setting
     if (bottom_bar_ != nullptr) {
-        if (hide) {
+        if (hide || fullscreen_emoji_) {
             lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
         } else {
             // Only show if there is actual content to display
@@ -1435,5 +1437,35 @@ void LcdDisplay::SetHideSubtitle(bool hide) {
                 lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
             }
         }
+    }
+}
+
+void LcdDisplay::SetFullscreenEmoji(bool enable) {
+    DisplayLockGuard lock(this);
+    fullscreen_emoji_ = enable;
+    // Before SetupUI() the widgets do not exist yet; SetupUI() applies the flag itself.
+    if (setup_ui_called_) {
+        ApplyFullscreenEmoji();
+    }
+}
+
+void LcdDisplay::ApplyFullscreenEmoji() {
+    if (!fullscreen_emoji_) {
+        return;
+    }
+    // The low battery popup is left alone on purpose: it only appears when the battery is empty.
+    for (lv_obj_t* bar : {top_bar_, status_bar_, bottom_bar_}) {
+        if (bar != nullptr) {
+            lv_obj_add_flag(bar, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (emoji_box_ != nullptr) {
+        lv_obj_set_size(emoji_box_, width_, height_);
+        lv_obj_align(emoji_box_, LV_ALIGN_CENTER, 0, 0);
+    }
+    if (emoji_image_ != nullptr) {
+        lv_obj_set_size(emoji_image_, width_, height_);
+        lv_image_set_inner_align(emoji_image_, LV_IMAGE_ALIGN_STRETCH);
+        lv_obj_center(emoji_image_);
     }
 }
