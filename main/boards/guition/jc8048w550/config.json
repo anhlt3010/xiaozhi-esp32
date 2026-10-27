@@ -1,0 +1,16 @@
+{
+    "manufacturer": "guition",
+    "type": "guition-jc8048w550",
+    "target": "esp32s3",
+    "builds": [
+        {
+            "name": "guition-jc8048w550",
+            "sdkconfig_append": [
+                "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y",
+                "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v2/16m.csv\"",
+                "CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y",
+                "CONFIG_SPIRAM_RODATA=y"
+            ]
+        }
+    ]
+}

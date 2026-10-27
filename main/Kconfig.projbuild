@@ -271,6 +271,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_GUITION_JC4827W543
         bool "Guition JC4827W543 4.3-inch ESP32-S3"
         depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_GUITION_JC8048W550
+        bool "Guition JC8048W550 5-inch ESP32-S3"
+        depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_HU_087
         bool "HU-087"
         depends on IDF_TARGET_ESP32S3
