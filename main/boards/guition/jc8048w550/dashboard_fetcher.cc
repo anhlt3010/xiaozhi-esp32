@@ -19,6 +19,10 @@ namespace {
 constexpr int kTaskStackBytes = 10 * 1024;
 constexpr UBaseType_t kTaskPriority = 2;
 constexpr int64_t kPollSeconds = 30;
+// While a source has never loaded, check often and retry soon: the screen shows
+// "loading..." and the failure is usually a slow start (DNS, WiFi, TLS).
+constexpr int64_t kFirstLoadPollSeconds = 3;
+constexpr int64_t kFirstLoadRetrySeconds = 20;
 constexpr int64_t kWeatherRefreshSeconds = 30 * 60;
 constexpr int64_t kReposRefreshSeconds = 60 * 60;
 constexpr int64_t kRetrySeconds = 5 * 60;
@@ -83,18 +87,21 @@ void DashboardFetcher::Run() {
         bool changed = false;
         if (allowed && now >= weather_due_s_) {
             bool ok = RefreshWeather();
-            weather_due_s_ = now + (ok ? kWeatherRefreshSeconds : kRetrySeconds);
+            int64_t retry = snapshot_.weather.valid ? kRetrySeconds : kFirstLoadRetrySeconds;
+            weather_due_s_ = now + (ok ? kWeatherRefreshSeconds : retry);
             changed = true;
         }
         if (allowed && now >= repos_due_s_) {
             bool ok = RefreshRepos();
-            repos_due_s_ = now + (ok ? kReposRefreshSeconds : kRetrySeconds);
+            int64_t retry = snapshot_.repos.valid ? kRetrySeconds : kFirstLoadRetrySeconds;
+            repos_due_s_ = now + (ok ? kReposRefreshSeconds : retry);
             changed = true;
         }
         if (changed && on_update_) {
             on_update_(snapshot_);
         }
-        vTaskDelay(pdMS_TO_TICKS(kPollSeconds * 1000));
+        bool loading = !snapshot_.weather.valid || !snapshot_.repos.valid;
+        vTaskDelay(pdMS_TO_TICKS((loading ? kFirstLoadPollSeconds : kPollSeconds) * 1000));
     }
 }
 
