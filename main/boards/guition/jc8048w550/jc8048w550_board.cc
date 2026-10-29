@@ -1,7 +1,11 @@
 #include "application.h"
+#include "assets/lang_config.h"
 #include "codecs/no_audio_codec.h"
 #include "config.h"
+#include "dashboard_fetcher.h"
 #include "display/lcd_display.h"
+#include "display/lvgl_display/lvgl_theme.h"
+#include "idle_dashboard.h"
 #include "wifi_board.h"
 
 #include <driver/gpio.h>
@@ -10,11 +14,21 @@
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_rgb.h>
 #include <esp_lcd_touch_gt911.h>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_lvgl_port.h>
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <vector>
 
 #define TAG "JC8048W550Board"
 
+// Two-part layout for the 800x480 panel: the emotion in a 240px column on the
+// left, bottom-aligned, and a right panel that shows the conversation while
+// talking and a board of info cards while idle.
+//
 // The stock chat UI registers no touch handler of its own, and the only
 // physical switch (BOOT) shares IO0 with the speaker's bit clock. A tap is the
 // only way to start talking.
@@ -23,18 +37,32 @@ public:
     using RgbLcdDisplay::RgbLcdDisplay;
 
     void SetupUI() override {
+        if (right_panel_ != nullptr) {
+            return;
+        }
         RgbLcdDisplay::SetupUI();
         DisplayLockGuard lock(this);
+        GrowLvglPool();
+        if (container_ == nullptr || emoji_box_ == nullptr || emoji_image_ == nullptr ||
+            top_bar_ == nullptr) {
+            return;
+        }
+
+        ApplyBackground();
+        LayoutEmojiColumn();
+        BuildRightPanel();
+        RefreshRightPanel();
 
         // LVGL delivers a click to the topmost clickable object under the
-        // finger, and the chat area fills the screen, so cover the screen, the
-        // container and the chat area.
+        // finger. The right panel and its children are made non-clickable, so
+        // a tap lands on the container behind them; cover the screen, the
+        // container and (WeChat style only) the chat area.
         for (lv_obj_t* obj : {lv_screen_active(), container_, content_}) {
             if (obj == nullptr) {
                 continue;
             }
             lv_obj_add_flag(obj, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_add_event_cb(obj, OnTap, LV_EVENT_CLICKED, nullptr);
+            lv_obj_add_event_cb(obj, OnTap, LV_EVENT_CLICKED, this);
         }
 
         // Chat bubbles are created per message after this runs; have them pass
@@ -54,18 +82,413 @@ public:
         }
     }
 
+    bool SetEmotion(const char* emotion) override {
+        bool shown = RgbLcdDisplay::SetEmotion(emotion);
+        if (emoji_image_ != nullptr) {
+            DisplayLockGuard lock(this);
+            FitEmojiImage();
+        }
+        return shown;
+    }
+
+    // The base class has no idea which status means "talking"; the Application
+    // sets these three for the whole conversation and Standby (or the idle
+    // clock) afterwards.
+    void SetStatus(const char* status) override {
+        RgbLcdDisplay::SetStatus(status);
+        if (status == nullptr || right_panel_ == nullptr) {
+            return;
+        }
+        DisplayLockGuard lock(this);
+        talking_ = strcmp(status, Lang::Strings::CONNECTING) == 0 ||
+                   strcmp(status, Lang::Strings::LISTENING) == 0 ||
+                   strcmp(status, Lang::Strings::SPEAKING) == 0;
+        RefreshRightPanel();
+    }
+
+    void SetChatMessage(const char* role, const char* content) override {
+        if (role == nullptr || content == nullptr) {
+            return;
+        }
+        if (chat_list_ == nullptr) {
+            ESP_LOGW(TAG, "SetChatMessage('%s') called before SetupUI() - message will be lost!",
+                     role);
+            return;
+        }
+        DisplayLockGuard lock(this);
+        if (content[0] == '\0') {
+            // An empty system message is how the Application withdraws the
+            // previous one (e.g. "please wait").
+            if (strcmp(role, kRoleSystem) == 0) {
+                uint32_t count = lv_obj_get_child_cnt(chat_list_);
+                while (count > 0) {
+                    lv_obj_t* last = lv_obj_get_child(chat_list_, count - 1);
+                    if (!RowHasRole(last, kRoleSystem)) {
+                        break;
+                    }
+                    lv_obj_delete(last);
+                    count--;
+                }
+                RefreshRightPanel();
+            }
+            return;
+        }
+
+        // Show the list first so the bubble can be measured and scrolled to.
+        if (dashboard_ != nullptr) {
+            dashboard_->HideDetail();
+        }
+        lv_obj_remove_flag(chat_list_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(info_panel_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_t* row = AddChatBubble(role, content);
+        while (lv_obj_get_child_cnt(chat_list_) > kMaxChatRows) {
+            lv_obj_delete(lv_obj_get_child(chat_list_, 0));
+        }
+        RefreshRightPanel();
+        lv_obj_update_layout(chat_list_);
+        lv_obj_scroll_to_view(row, LV_ANIM_OFF);
+    }
+
+    void RemoveChatMessage(const char* role, const char* content) override {
+        if (chat_list_ == nullptr || role == nullptr || content == nullptr) {
+            return;
+        }
+        DisplayLockGuard lock(this);
+        uint32_t count = lv_obj_get_child_cnt(chat_list_);
+        if (count == 0) {
+            return;
+        }
+        lv_obj_t* last = lv_obj_get_child(chat_list_, count - 1);
+        lv_obj_t* bubble = lv_obj_get_child(last, 0);
+        lv_obj_t* label = bubble != nullptr ? lv_obj_get_child(bubble, 0) : nullptr;
+        if (label == nullptr || strcmp(lv_label_get_text(label), content) != 0) {
+            return;
+        }
+        lv_obj_delete(last);
+        RefreshRightPanel();
+    }
+
+    void ClearChatMessages() override {
+        if (chat_list_ == nullptr) {
+            return;
+        }
+        DisplayLockGuard lock(this);
+        lv_obj_clean(chat_list_);
+        RefreshRightPanel();
+    }
+
+    // Called from the fetch task. Keeps the latest data so a dashboard that is
+    // built after the first fetch still gets it.
+    void ApplyDashboardSnapshot(const dashboard::Snapshot& snapshot) {
+        DisplayLockGuard lock(this);
+        last_snapshot_ = snapshot;
+        has_snapshot_ = true;
+        if (dashboard_ != nullptr) {
+            dashboard_->Update(last_snapshot_);
+        }
+    }
+
+    void SetTheme(Theme* theme) override {
+        RgbLcdDisplay::SetTheme(theme);
+        if (right_panel_ == nullptr) {
+            return;
+        }
+        DisplayLockGuard lock(this);
+        ApplyBackground();
+        for (uint32_t i = 0; i < lv_obj_get_child_cnt(chat_list_); ++i) {
+            ColorBubble(lv_obj_get_child(chat_list_, i));
+        }
+    }
+
 private:
+    static constexpr int32_t kEmojiSize = DISPLAY_EMOJI_COLUMN_WIDTH;
+    static constexpr uint32_t kMaxChatRows = 12;
+    static constexpr uint32_t kBackgroundColor = 0x18181C;
+    static constexpr const char* kRoleUser = "user";
+    static constexpr const char* kRoleAssistant = "assistant";
+    static constexpr const char* kRoleSystem = "system";
+
+    lv_obj_t* right_panel_ = nullptr;
+    lv_obj_t* chat_list_ = nullptr;
+    lv_obj_t* info_panel_ = nullptr;
+    int32_t panel_width_ = 0;  // usable width inside the right panel's padding
+    bool talking_ = false;
+    std::unique_ptr<IdleDashboard> dashboard_;
+    dashboard::Snapshot last_snapshot_;
+    bool has_snapshot_ = false;
+
     static void OnTap(lv_event_t* e) {
+        // With the repo detail open, a tap outside the card only closes it.
+        auto* display = static_cast<JC8048W550Display*>(lv_event_get_user_data(e));
+        if (display != nullptr && display->dashboard_ != nullptr &&
+            display->dashboard_->IsDetailOpen()) {
+            display->dashboard_->HideDetail();
+            return;
+        }
         ESP_LOGI(TAG, "tap: toggling chat state");
         // ToggleChatState only sets an event bit, so the LVGL task may call it.
         Application::GetInstance().ToggleChatState();
     }
+
+    // The theme's own background replaced by this board's fixed one; redone
+    // after every theme change because the base class resets it.
+    // RgbLcdDisplay leaves LVGL with only the 1 MB base pool. The 240x240 emoji
+    // GIFs need about 300 KB each, so changing emotion during a conversation
+    // exhausted it and the emoji disappeared. Add PSRAM pools, one per
+    // LV_MEM_SIZE as TLSF rejects larger ones (see SpiLcdDisplay).
+    void GrowLvglPool() {
+        constexpr size_t kExtraPools = 2;
+        for (size_t i = 0; i < kExtraPools; i++) {
+            void* pool = heap_caps_malloc(LV_MEM_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (pool == nullptr || lv_mem_add_pool(pool, LV_MEM_SIZE) == nullptr) {
+                heap_caps_free(pool);
+                ESP_LOGE(TAG, "Failed to add LVGL PSRAM pool %u", static_cast<unsigned>(i));
+                return;
+            }
+        }
+        ESP_LOGI(TAG, "Added %u KB LVGL pool in PSRAM",
+                 static_cast<unsigned>(kExtraPools * LV_MEM_SIZE / 1024));
+    }
+
+    void ApplyBackground() {
+        const lv_color_t background = lv_color_hex(kBackgroundColor);
+        for (lv_obj_t* obj : {lv_screen_active(), container_, top_bar_, bottom_bar_}) {
+            if (obj != nullptr) {
+                lv_obj_set_style_bg_color(obj, background, 0);
+            }
+        }
+    }
+
+    static void PassTaps(lv_obj_t* obj) { lv_obj_remove_flag(obj, LV_OBJ_FLAG_CLICKABLE); }
+
+    static bool RowHasRole(lv_obj_t* row, const char* role) {
+        const char* row_role = static_cast<const char*>(lv_obj_get_user_data(row));
+        return row_role != nullptr && strcmp(row_role, role) == 0;
+    }
+
+    // Only the width is limited: an emotion image keeps its own size, any
+    // height, and is scaled down (keeping its proportions) only when it is wider
+    // than the column or taller than the screen.
+    void FitEmojiImage() {
+        int32_t width = lv_image_get_src_width(emoji_image_);
+        int32_t height = lv_image_get_src_height(emoji_image_);
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+        if (width > kEmojiSize) {
+            height = height * kEmojiSize / width;
+            width = kEmojiSize;
+        }
+        if (height > height_) {
+            width = width * height_ / height;
+            height = height_;
+        }
+        lv_obj_set_size(emoji_image_, width, height);
+        lv_image_set_inner_align(emoji_image_, LV_IMAGE_ALIGN_STRETCH);
+    }
+
+    // Left column: as wide as the emotion may be and as tall as the screen,
+    // with the emotion image or glyph on its bottom edge.
+    void LayoutEmojiColumn() {
+        lv_obj_set_size(emoji_box_, kEmojiSize, height_);
+        lv_obj_align(emoji_box_, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+        lv_obj_remove_flag(emoji_box_, LV_OBJ_FLAG_SCROLLABLE);
+        PassTaps(emoji_box_);
+        lv_obj_set_flex_flow(emoji_box_, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(emoji_box_, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+    }
+
+    void BuildRightPanel() {
+        auto theme = static_cast<LvglTheme*>(current_theme_);
+        const int32_t pad = theme->spacing(4);
+        const int32_t gap = theme->spacing(3);
+        lv_obj_update_layout(top_bar_);
+        const int32_t top = lv_obj_get_height(top_bar_) + pad;
+        panel_width_ = width_ - kEmojiSize - 2 * pad;
+
+        // Sits right above the container so the status bars stay on top.
+        right_panel_ = lv_obj_create(lv_screen_active());
+        lv_obj_set_size(right_panel_, width_ - kEmojiSize, height_);
+        lv_obj_align(right_panel_, LV_ALIGN_TOP_RIGHT, 0, 0);
+        lv_obj_set_style_radius(right_panel_, 0, 0);
+        lv_obj_set_style_bg_opa(right_panel_, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(right_panel_, 0, 0);
+        lv_obj_set_style_pad_all(right_panel_, pad, 0);
+        lv_obj_set_style_pad_top(right_panel_, top, 0);
+        lv_obj_remove_flag(right_panel_, LV_OBJ_FLAG_SCROLLABLE);
+        PassTaps(right_panel_);
+        lv_obj_move_to_index(right_panel_, 1);
+
+        chat_list_ = lv_obj_create(right_panel_);
+        lv_obj_set_size(chat_list_, lv_pct(100), lv_pct(100));
+        lv_obj_set_style_radius(chat_list_, 0, 0);
+        lv_obj_set_style_bg_opa(chat_list_, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(chat_list_, 0, 0);
+        lv_obj_set_style_pad_all(chat_list_, 0, 0);
+        lv_obj_set_style_pad_row(chat_list_, gap, 0);
+        lv_obj_set_scrollbar_mode(chat_list_, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_set_scroll_dir(chat_list_, LV_DIR_VER);
+        lv_obj_set_flex_flow(chat_list_, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(chat_list_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
+                              LV_FLEX_ALIGN_START);
+        PassTaps(chat_list_);
+
+        info_panel_ = lv_obj_create(right_panel_);
+        lv_obj_set_size(info_panel_, lv_pct(100), lv_pct(100));
+        lv_obj_set_style_radius(info_panel_, 0, 0);
+        lv_obj_set_style_bg_opa(info_panel_, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(info_panel_, 0, 0);
+        lv_obj_set_style_pad_all(info_panel_, 0, 0);
+        lv_obj_set_style_pad_row(info_panel_, gap, 0);
+        lv_obj_set_style_pad_column(info_panel_, gap, 0);
+        lv_obj_remove_flag(info_panel_, LV_OBJ_FLAG_SCROLLABLE);
+        PassTaps(info_panel_);
+
+        // The idle view takes over info_panel_ (flex column) and hosts its
+        // detail overlay on the whole right panel.
+        DashboardFonts fonts = {&lv_font_montserrat_16, &lv_font_montserrat_20,
+                                &lv_font_montserrat_28, &lv_font_montserrat_40,
+                                theme->icon_font()->font()};
+        dashboard_ =
+            std::make_unique<IdleDashboard>(info_panel_, right_panel_, panel_width_, fonts);
+        if (has_snapshot_) {
+            dashboard_->Update(last_snapshot_);
+        }
+    }
+
+    // Chat while talking (or while a system message such as an error or an
+    // activation code is up), the idle dashboard otherwise.
+    void RefreshRightPanel() {
+        bool show_chat = talking_ || lv_obj_get_child_cnt(chat_list_) > 0;
+        if (show_chat) {
+            if (dashboard_ != nullptr) {
+                dashboard_->HideDetail();
+            }
+            lv_obj_remove_flag(chat_list_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(info_panel_, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(chat_list_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(info_panel_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    void ColorBubble(lv_obj_t* row) {
+        auto theme = static_cast<LvglTheme*>(current_theme_);
+        lv_obj_t* bubble = lv_obj_get_child(row, 0);
+        if (bubble == nullptr) {
+            return;
+        }
+        bool is_system = RowHasRole(row, kRoleSystem);
+        lv_color_t bg = RowHasRole(row, kRoleUser) ? theme->user_bubble_color()
+                                                   : (is_system ? theme->system_bubble_color()
+                                                                : theme->assistant_bubble_color());
+        lv_obj_set_style_bg_color(bubble, bg, 0);
+        lv_obj_set_style_bg_opa(bubble, LV_OPA_70, 0);
+        lv_obj_set_style_text_color(
+            bubble, is_system ? theme->system_text_color() : theme->text_color(), 0);
+    }
+
+    // One full-width row per message so the bubble can sit left (assistant),
+    // right (user) or centred (system). Returns the row.
+    lv_obj_t* AddChatBubble(const char* role, const char* content) {
+        auto theme = static_cast<LvglTheme*>(current_theme_);
+        const char* kind = strcmp(role, kRoleUser) == 0     ? kRoleUser
+                           : strcmp(role, kRoleSystem) == 0 ? kRoleSystem
+                                                            : kRoleAssistant;
+        lv_flex_align_t place = kind == kRoleUser     ? LV_FLEX_ALIGN_END
+                                : kind == kRoleSystem ? LV_FLEX_ALIGN_CENTER
+                                                      : LV_FLEX_ALIGN_START;
+
+        lv_obj_t* row = lv_obj_create(chat_list_);
+        lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_radius(row, 0, 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        PassTaps(row);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, place, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+        lv_obj_set_user_data(row, const_cast<char*>(kind));
+
+        const int32_t pad = theme->spacing(4);
+        lv_obj_t* bubble = lv_obj_create(row);
+        lv_obj_set_size(bubble, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+        lv_obj_set_style_radius(bubble, 8, 0);
+        lv_obj_set_style_border_width(bubble, 0, 0);
+        lv_obj_set_style_pad_all(bubble, pad, 0);
+        lv_obj_set_scrollbar_mode(bubble, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_remove_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
+        PassTaps(bubble);
+
+        // Measure the text on one line, then cap the width so long text wraps.
+        lv_obj_t* label = lv_label_create(bubble);
+        lv_label_set_text(label, content);
+        lv_obj_set_width(label, LV_SIZE_CONTENT);
+        lv_obj_update_layout(label);
+        const int32_t max_width = panel_width_ * 85 / 100 - 2 * pad;
+        lv_obj_set_width(label, std::min<int32_t>(lv_obj_get_width(label), max_width));
+        lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+
+        ColorBubble(row);
+        return row;
+    }
+};
+
+// The stock NoAudioCodec shifts samples right by 12, which is +24 dB for the
+// 24-bit INMP441 and clips close speech. This variant uses AUDIO_MIC_SAMPLE_SHIFT
+// and logs the input level so the shift can be tuned on the device.
+class JC8048W550AudioCodec : public NoAudioCodecSimplex {
+public:
+    using NoAudioCodecSimplex::NoAudioCodecSimplex;
+
+protected:
+    virtual int Read(int16_t* dest, int samples) override {
+        constexpr uint32_t kReadTimeoutMs = 200;
+        constexpr int kLogIntervalSamples = AUDIO_INPUT_SAMPLE_RATE * 2;
+
+        size_t bytes_read = 0;
+        read_buffer_.resize(samples);
+        if (i2s_channel_read(rx_handle_, read_buffer_.data(), samples * sizeof(int32_t),
+                             &bytes_read, kReadTimeoutMs) != ESP_OK) {
+            return 0;
+        }
+
+        samples = bytes_read / sizeof(int32_t);
+        for (int i = 0; i < samples; i++) {
+            int32_t value = read_buffer_[i] >> AUDIO_MIC_SAMPLE_SHIFT;
+            if (value > INT16_MAX || value < -INT16_MAX) {
+                clipped_++;
+                value = value > 0 ? INT16_MAX : -INT16_MAX;
+            }
+            dest[i] = static_cast<int16_t>(value);
+            peak_ = std::max<int32_t>(peak_, std::abs(value));
+        }
+
+        logged_samples_ += samples;
+        if (logged_samples_ >= kLogIntervalSamples) {
+            ESP_LOGI(TAG, "Mic peak %ld/32767, clipped %d of %d samples", static_cast<long>(peak_),
+                     clipped_, logged_samples_);
+            peak_ = 0;
+            clipped_ = 0;
+            logged_samples_ = 0;
+        }
+        return samples;
+    }
+
+private:
+    std::vector<int32_t> read_buffer_;
+    int32_t peak_ = 0;
+    int clipped_ = 0;
+    int logged_samples_ = 0;
 };
 
 class JC8048W550Board : public WifiBoard {
 private:
     i2c_master_bus_handle_t touch_i2c_bus_ = nullptr;
     LcdDisplay* display_ = nullptr;
+    std::unique_ptr<DashboardFetcher> fetcher_;
 
     void InitializeDisplay() {
         esp_lcd_panel_handle_t panel = nullptr;
@@ -202,10 +625,16 @@ public:
         InitializeTouchI2c();
         InitializeTouch();
         GetBacklight()->RestoreBrightness();
+        fetcher_ = std::make_unique<DashboardFetcher>(
+            [display =
+                 static_cast<JC8048W550Display*>(display_)](const dashboard::Snapshot& snapshot) {
+                display->ApplyDashboardSnapshot(snapshot);
+            });
+        fetcher_->Start();
     }
 
     virtual AudioCodec* GetAudioCodec() override {
-        static NoAudioCodecSimplex audio_codec(AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
+        static JC8048W550AudioCodec audio_codec(AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
                                                AUDIO_I2S_SPK_GPIO_BCLK, AUDIO_I2S_SPK_GPIO_LRCK,
                                                AUDIO_I2S_SPK_GPIO_DOUT, AUDIO_I2S_MIC_GPIO_SCK,
                                                AUDIO_I2S_MIC_GPIO_WS, AUDIO_I2S_MIC_GPIO_DIN);

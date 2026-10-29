@@ -964,6 +964,15 @@ config USE_MULTILINE_CHAT_MESSAGE
         When disabled (default), a single-line horizontally scrolling label
         is shown at the bottom of the screen.
 
+config RGB_LCD_LVGL_TASK_STACK_SIZE
+    int "LVGL task stack size for RGB LCD displays (bytes)"
+    default 7168
+    range 4096 32768
+    help
+        Stack size of the LVGL task created for RGB LCD displays. The default
+        is the esp_lvgl_port default. A board with a deep widget tree (many
+        nested containers) needs more: the stack is allocated from internal RAM.
+
 choice WAKE_WORD_TYPE
     prompt "Wake Word Implementation Type"
     default WAKE_WORD_DISABLED

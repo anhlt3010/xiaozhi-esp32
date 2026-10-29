@@ -11,6 +11,10 @@
 
 #include <driver/gpio.h>
 
+// Left column of the screen: the emotion, bottom-aligned and at most this wide
+// (any height). The rest of the screen is the right panel (chat or idle dashboard).
+#define DISPLAY_EMOJI_COLUMN_WIDTH 240
+
 #define AUDIO_INPUT_SAMPLE_RATE 16000
 #define AUDIO_OUTPUT_SAMPLE_RATE 24000
 
@@ -22,11 +26,17 @@
 #define AUDIO_I2S_SPK_GPIO_LRCK GPIO_NUM_18
 #define AUDIO_I2S_SPK_GPIO_DOUT GPIO_NUM_17
 
-// The vendor pin tables show no microphone. Voice input needs one added; see
-// the board README.
-#define AUDIO_I2S_MIC_GPIO_SCK GPIO_NUM_NC
-#define AUDIO_I2S_MIC_GPIO_WS GPIO_NUM_NC
-#define AUDIO_I2S_MIC_GPIO_DIN GPIO_NUM_NC
+// Microphone: external INMP441 (I2S, L/R tied to GND = left channel) wired to
+// the P2 header. The vendor pin tables show no microphone; IO11-13 are the
+// SD-card lines, so the card slot must stay empty.
+#define AUDIO_I2S_MIC_GPIO_SCK GPIO_NUM_12
+#define AUDIO_I2S_MIC_GPIO_WS GPIO_NUM_11
+#define AUDIO_I2S_MIC_GPIO_DIN GPIO_NUM_13
+
+// INMP441 samples are 24 bit in a 32-bit slot. A shift of 16 is unity gain; each
+// step below that doubles the gain. The stock codec uses 12 (+24 dB), which
+// clips close speech. 14 (+12 dB) is a starting guess, to be tuned on the device.
+#define AUDIO_MIC_SAMPLE_SHIFT 14
 
 // Display: 800x480 RGB565 over the ESP32-S3 LCD_CAM peripheral, no DISP pin.
 #define DISPLAY_WIDTH 800
@@ -37,6 +47,8 @@
 #define DISPLAY_OFFSET_X 0
 #define DISPLAY_OFFSET_Y 0
 
+// 12 MHz was tried against right-edge flicker with animated emoji: the panel
+// then showed only cycling colours. Keep the vendor's 16 MHz.
 #define LCD_PCLK_HZ (16 * 1000 * 1000)
 
 #define LCD_PIN_DE GPIO_NUM_40

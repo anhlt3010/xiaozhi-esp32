@@ -30,8 +30,44 @@ Display, backlight and speaker work. Two things were needed to get a picture:
 - hsync/vsync idle low (the vendor demo's polarity 0).
 - Backlight PWM at 1220 Hz. The stock 25 kHz default left the screen dark.
 
-Touch initialises (GT911 at 0x5D); its coordinates and the microphone path are
-not checked.
+Touch initialises (GT911 at 0x5D); its coordinates and the INMP441 microphone
+path are not checked.
+
+## Display
+
+The 800x480 screen is split in two. The left 240 px column shows the emotion
+(an image at most 240 px wide, any height, or a glyph), bottom-aligned. The right 560 px shows the
+conversation while talking and the idle dashboard otherwise. The background is
+fixed at `#18181C`.
+
+### Idle dashboard
+
+While the device is idle the right side shows:
+
+- a card with the clock, the date, the city, today's weather and the next seven
+  days;
+- the top five GitHub repositories about AI (tagged `llm`, created in the last
+  seven days, most starred first). Tapping a repo opens a detail card with its
+  full description, language, stars, forks, topics and last update; tap outside
+  the card or the close button to dismiss it. A tap anywhere else still starts
+  a conversation.
+
+The data is fetched by the device itself, only while it is idle, the clock is
+set and enough internal RAM is free:
+
+| Data | Service | Refresh |
+|---|---|---|
+| Location (city, latitude, longitude) | `ipwho.is`, looked up from your public IP address | once per boot |
+| Weather (today and 7 days) | Open-Meteo, no key | every 30 minutes |
+| Repositories | GitHub search API, no token (about 10 requests per minute allowed) | every 60 minutes |
+
+**Privacy:** your public IP address is sent to `ipwho.is`, and the approximate
+location it returns is sent to Open-Meteo. Nothing is stored: the data lives in
+RAM and is fetched again after a reboot.
+
+If a request fails the last data stays on screen, dimmed with an `offline` tag
+(`no data` if nothing was ever fetched). Text from the services is shown as
+ASCII; other characters appear as `?`. The built-in font has no accents.
 
 ## Build
 
@@ -41,10 +77,19 @@ python scripts/build.py guition/jc8048w550
 
 ## Audio
 
-**No microphone.** The vendor pin tables define none, so the board only plays
-sound; voice input does not work until one is added. The microphone pins in
-`config.h` are `GPIO_NUM_NC`. The free pins are the SD-card lines (IO10-13, if
-the card slot stays empty).
+**Microphone: external INMP441.** The vendor pin tables define no microphone,
+so one has to be wired to the P2/P4 headers:
+
+| INMP441 | Board |
+|---|---|
+| WS | P2 IO11 |
+| SCK | P2 IO12 |
+| SD | P2 IO13 |
+| GND and L/R | P4 GND (L/R low = left channel) |
+| VDD | P4 3.3V |
+
+IO11-13 are the SD-card lines, so the card slot must stay empty. This wiring is
+from a proposed diagram and has not been checked on hardware.
 
 The vendor `Audio_test` demo puts the speaker bit clock on IO19, but IO19 is the
 touch SDA line. The demo that runs both together uses IO0, which this board
