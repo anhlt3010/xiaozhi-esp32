@@ -24,8 +24,7 @@ const lv_color_t kStar = lv_color_hex(0xf5c542);
 const lv_color_t kWarning = lv_color_hex(0xff9f43);
 
 constexpr int32_t kCardPadding = 12;
-constexpr int32_t kRowHeight = 32;
-constexpr int32_t kNameWidth = 200;
+constexpr int32_t kRowHeight = 37;
 constexpr int32_t kStatsWidth = 72;  // star icon + star count, right-aligned
 constexpr int32_t kRowPadding = 8;   // left/right padding and gap inside a repo row
 constexpr int32_t kBadgeSize = 22;
@@ -75,7 +74,9 @@ lv_obj_t* Box(lv_obj_t* parent) {
 
 lv_obj_t* Label(lv_obj_t* parent, const lv_font_t* font, lv_color_t color, const char* text = "") {
     lv_obj_t* label = lv_label_create(parent);
-    lv_obj_set_style_text_font(label, font, 0);
+    if (font != nullptr) {
+        lv_obj_set_style_text_font(label, font, 0);
+    }
     lv_obj_set_style_text_color(label, color, 0);
     lv_label_set_text(label, text);
     return label;
@@ -157,7 +158,7 @@ void IdleDashboard::BuildSummaryCard(lv_obj_t* parent, int32_t width) {
     lv_obj_set_style_pad_column(date_row, 6, 0);
     date_ = Label(date_row, fonts_.small, kMuted);
     city_icon_ = Label(date_row, fonts_.icon, kMuted, MATERIAL_SYMBOLS_LOCATION_ON);
-    city_ = Label(date_row, fonts_.small, kMuted, "--");
+    city_ = Label(date_row, fonts_.text, kMuted, "--");
     SetHidden(city_icon_, true);
     SetHidden(city_, true);
 
@@ -175,7 +176,7 @@ void IdleDashboard::BuildSummaryCard(lv_obj_t* parent, int32_t width) {
     temp_ = Label(temps, fonts_.temp, kText);
     condition_ = Label(temps, fonts_.small, kText);
     range_ = Label(temps, fonts_.small, kMuted);
-    weather_status_ = Label(right, fonts_.small, kWarning, "no data");
+    weather_status_ = Label(right, fonts_.small, kWarning, "loading...");
 
     // Bottom row: the seven days after today.
     days_ = Box(card);
@@ -205,7 +206,7 @@ void IdleDashboard::BuildRepoList(lv_obj_t* parent, int32_t width) {
     Row(header, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_hor(header, 2, 0);
     Label(header, fonts_.small, kMuted, "GitHub \xE2\x80\xA2 AI trending");
-    repo_tag_ = Label(header, fonts_.small, kWarning, "no data");
+    repo_tag_ = Label(header, fonts_.small, kWarning, "loading...");
 
     for (int i = 0; i < kRepoRows; ++i) {
         RepoRow& row = rows_[i];
@@ -237,15 +238,12 @@ void IdleDashboard::BuildRepoList(lv_obj_t* parent, int32_t width) {
                          rank_text);
         lv_obj_center(row.rank);
 
-        row.name = Label(row.row, fonts_.small, kText);
-        lv_obj_set_width(row.name, kNameWidth);
+        // The name takes all the width left by the badge, the stats and the gaps
+        // between them; the description is only shown in the detail card.
+        row.name = Label(row.row, fonts_.text, kText);
+        lv_obj_set_width(row.name, width - 2 * kRowPadding - kBadgeSize - kStatsWidth -
+                                       2 * kRowPadding);
         lv_label_set_long_mode(row.name, LV_LABEL_LONG_MODE_CLIP);
-        // Fixed width (the row's inner width minus the other columns and the gaps
-        // between them); text past it is clipped.
-        row.description = Label(row.row, fonts_.small, kMuted);
-        lv_obj_set_width(row.description, width - 2 * kRowPadding - kBadgeSize - kNameWidth -
-                                              kStatsWidth - 3 * kRowPadding);
-        lv_label_set_long_mode(row.description, LV_LABEL_LONG_MODE_CLIP);
         lv_obj_t* stats = Box(row.row);
         lv_obj_set_size(stats, kStatsWidth, LV_SIZE_CONTENT);
         Row(stats, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER);
@@ -293,7 +291,7 @@ void IdleDashboard::BuildDetail(lv_obj_t* parent) {
     lv_obj_t* title_row = Box(card);
     lv_obj_set_size(title_row, lv_pct(100), LV_SIZE_CONTENT);
     Row(title_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START);
-    detail_name_ = Label(title_row, fonts_.normal, kText);
+    detail_name_ = Label(title_row, fonts_.text, kText);
     lv_obj_set_width(detail_name_, lv_pct(85));
     lv_label_set_long_mode(detail_name_, LV_LABEL_LONG_MODE_WRAP);
 
@@ -310,13 +308,13 @@ void IdleDashboard::BuildDetail(lv_obj_t* parent) {
     lv_obj_center(close_label);
     lv_obj_add_event_cb(close, OnDetailClosed, LV_EVENT_CLICKED, this);
 
-    detail_description_ = Label(card, fonts_.small, kText);
+    detail_description_ = Label(card, fonts_.text, kText);
     lv_obj_set_width(detail_description_, lv_pct(100));
     lv_label_set_long_mode(detail_description_, LV_LABEL_LONG_MODE_WRAP);
-    detail_meta_ = Label(card, fonts_.small, kStar);
+    detail_meta_ = Label(card, fonts_.text, kStar);
     lv_obj_set_width(detail_meta_, lv_pct(100));
     lv_label_set_long_mode(detail_meta_, LV_LABEL_LONG_MODE_WRAP);
-    detail_topics_ = Label(card, fonts_.small, kMuted);
+    detail_topics_ = Label(card, fonts_.text, kMuted);
     lv_obj_set_width(detail_topics_, lv_pct(100));
     lv_label_set_long_mode(detail_topics_, LV_LABEL_LONG_MODE_WRAP);
 
@@ -334,7 +332,7 @@ void IdleDashboard::UpdateWeather(const Source<Weather>& source) {
         SetHidden(days_, true);
         SetHidden(city_icon_, true);
         SetHidden(city_, true);
-        SetText(weather_status_, "no data");
+        SetText(weather_status_, source.last_failed ? "no data" : "loading...");
         SetHidden(weather_status_, false);
         return;
     }
@@ -375,7 +373,7 @@ void IdleDashboard::UpdateRepos(const Source<std::vector<Repo>>& source) {
     repos_ = source.valid ? source.data : std::vector<Repo>();
     bool stale = IsStale(source.last_failed, source.fetched_at_s, kReposMaxAgeSeconds);
     if (!source.valid) {
-        SetText(repo_tag_, "no data");
+        SetText(repo_tag_, source.last_failed ? "no data" : "loading...");
         SetHidden(repo_tag_, false);
     } else {
         SetText(repo_tag_, "offline");
@@ -389,7 +387,6 @@ void IdleDashboard::UpdateRepos(const Source<std::vector<Repo>>& source) {
         }
         const Repo& repo = repos_[i];
         SetText(row.name, repo.full_name.c_str());
-        SetText(row.description, repo.description.c_str());
         SetText(row.stars, dashboard::FormatStars(repo.stars).c_str());
         lv_obj_set_style_opa(row.row, stale ? LV_OPA_50 : LV_OPA_COVER, 0);
         SetHidden(row.row, false);

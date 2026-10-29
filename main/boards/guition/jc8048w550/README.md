@@ -49,8 +49,7 @@ While the device is idle the right side shows:
 - the top five GitHub repositories about AI (tagged `llm`, created in the last
   seven days, most starred first). Tapping a repo opens a detail card with its
   full description, language, stars, forks, topics and last update; tap outside
-  the card or the close button to dismiss it. A tap anywhere else still starts
-  a conversation.
+  the card or the close button to dismiss it.
 
 The data is fetched by the device itself, only while it is idle, the clock is
 set and enough internal RAM is free:
@@ -66,8 +65,14 @@ location it returns is sent to Open-Meteo. Nothing is stored: the data lives in
 RAM and is fetched again after a reboot.
 
 If a request fails the last data stays on screen, dimmed with an `offline` tag
-(`no data` if nothing was ever fetched). Text from the services is shown as
-ASCII; other characters appear as `?`. The built-in font has no accents.
+(`no data` if nothing was ever fetched; `loading...` until the first attempt
+finishes).
+
+Repo names and descriptions and the city are UTF-8 and use the device's text
+font (the one in the assets partition), so they show every character that font
+has: the default assets carry the Noto `common` set (Latin, Cyrillic, kana,
+hangul and about 5,000 Chinese characters). A character the font lacks shows as
+a blank or a box. Emoji are removed because that font has no glyph for them.
 
 ## Build
 
@@ -97,7 +102,8 @@ definition uses. IO0 is also the BOOT switch, so there is no button input.
 
 ## Starting a conversation
 
-A tap anywhere on the screen toggles listening, as on the JC4827W543.
+A tap on the emotion column (the left 240 px) toggles listening. Taps on the
+right panel do nothing, except on a repository, which opens its detail card.
 
 ## Flashing
 

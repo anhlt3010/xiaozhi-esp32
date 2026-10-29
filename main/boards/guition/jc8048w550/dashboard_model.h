@@ -124,22 +124,56 @@ constexpr std::string FormatStars(int stars) {
     return detail::UIntToString(tenths / 10) + "." + detail::UIntToString(tenths % 10) + "k";
 }
 
-// Every byte >= 0x80 becomes '?', control characters become a space, and the
-// result is cut to max_chars.
-constexpr std::string SanitizeAscii(std::string_view text, size_t max_chars) {
+// Text from a web service, made safe to show: valid UTF-8 is kept, a stray or
+// truncated byte becomes '?', control characters become a space, and the result
+// is cut to max_chars characters (never in the middle of one). Characters
+// outside the Basic Multilingual Plane (emoji) and zero-width or joiner
+// characters are dropped: the text font has no glyph for them.
+constexpr std::string SanitizeText(std::string_view text, size_t max_chars) {
     std::string out;
-    for (char raw : text) {
-        if (out.size() >= max_chars) {
-            break;
+    size_t chars = 0;
+    size_t i = 0;
+    while (i < text.size() && chars < max_chars) {
+        unsigned char lead = static_cast<unsigned char>(text[i]);
+        size_t length = lead < 0x80                ? 1
+                        : (lead >= 0xC2 && lead <= 0xDF) ? 2
+                        : (lead >= 0xE0 && lead <= 0xEF) ? 3
+                        : (lead >= 0xF0 && lead <= 0xF4) ? 4
+                                                          : 0;
+        bool valid = length != 0 && i + length <= text.size();
+        for (size_t k = 1; valid && k < length; ++k) {
+            valid = (static_cast<unsigned char>(text[i + k]) & 0xC0) == 0x80;
         }
-        unsigned char c = static_cast<unsigned char>(raw);
-        if (c >= 0x80) {
+        if (valid && length == 3) {
+            unsigned char second = static_cast<unsigned char>(text[i + 1]);
+            // Overlong forms and UTF-16 surrogates are not text.
+            valid = !(lead == 0xE0 && second < 0xA0) && !(lead == 0xED && second >= 0xA0);
+        }
+        if (!valid) {
             out += '?';
-        } else if (c < 0x20 || c == 0x7f) {
-            out += ' ';
-        } else {
-            out += raw;
+            ++chars;
+            ++i;
+            continue;
         }
+        if (length == 1) {
+            out += (lead < 0x20 || lead == 0x7f) ? ' ' : text[i];
+            ++chars;
+        } else if (length == 3) {
+            unsigned code = (lead & 0x0Fu) << 12 |
+                            (static_cast<unsigned char>(text[i + 1]) & 0x3Fu) << 6 |
+                            (static_cast<unsigned char>(text[i + 2]) & 0x3Fu);
+            bool invisible = (code >= 0x200B && code <= 0x200F) || code == 0x2028 ||
+                             code == 0x2029 || code == 0xFE0E || code == 0xFE0F;
+            if (!invisible) {
+                out.append(text.substr(i, length));
+                ++chars;
+            }
+        } else if (length == 2) {
+            out.append(text.substr(i, length));
+            ++chars;
+        }
+        // length 4 (emoji and other supplementary characters) is dropped.
+        i += length;
     }
     return out;
 }
@@ -193,7 +227,7 @@ struct Snapshot {
 
 // Parsers return false, leaving `out` untouched, when a required field is
 // missing or has the wrong type. ParseRepos accepts an empty result and keeps
-// at most 5 repos; text fields are run through SanitizeAscii.
+// at most 5 repos; text fields are run through SanitizeText.
 bool ParseGeoIp(const std::string& json, GeoLocation& out);
 // Today is daily[0]; days[0..6] are the seven days after it.
 bool ParseWeather(const std::string& json, const std::string& city, Weather& out);

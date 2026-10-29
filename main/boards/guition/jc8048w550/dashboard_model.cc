@@ -36,14 +36,22 @@ static_assert(FormatStars(1000) == "1.0k");
 static_assert(FormatStars(12400) == "12.4k");
 static_assert(FormatStars(9876543) == "9876.5k");
 static_assert(FormatStars(-5) == "0");
-// Each byte of a multi-byte character becomes its own '?'.
-static_assert(SanitizeAscii("caf\xC3\xA9", 20) == "caf??");
-static_assert(SanitizeAscii("a\nb\tc", 20) == "a b c");
-static_assert(SanitizeAscii("abcdef", 3) == "abc");
-static_assert(SanitizeAscii("", 5).empty());
-static_assert(SanitizeAscii("abc", 0).empty());
+// Valid UTF-8 is kept; a stray or truncated byte becomes '?'.
+static_assert(SanitizeText("caf\xC3\xA9", 20) == "caf\xC3\xA9");
+static_assert(SanitizeText("\xE4\xBD\xA0\xE5\xA5\xBD", 20) == "\xE4\xBD\xA0\xE5\xA5\xBD");
+static_assert(SanitizeText("a\xE4\xBD", 20) == "a??");
+static_assert(SanitizeText("a\xFF" "b", 20) == "a?b");
+// The limit counts characters and never cuts one in half.
+static_assert(SanitizeText("\xE4\xBD\xA0\xE5\xA5\xBD", 1) == "\xE4\xBD\xA0");
+// Emoji and zero-width characters have no glyph and are dropped.
+static_assert(SanitizeText("a\xF0\x9F\x9A\x80" "b", 20) == "ab");
+static_assert(SanitizeText("a\xE2\x80\x8D" "b", 20) == "ab");
+static_assert(SanitizeText("a\nb\tc", 20) == "a b c");
+static_assert(SanitizeText("abcdef", 3) == "abc");
+static_assert(SanitizeText("", 5).empty());
+static_assert(SanitizeText("abc", 0).empty());
 // A 300-char description is cut to the limit.
-static_assert(SanitizeAscii(std::string_view("0123456789012345678901234567890123456789"
+static_assert(SanitizeText(std::string_view("0123456789012345678901234567890123456789"
                                              "0123456789012345678901234567890123456789"
                                              "0123456789012345678901234567890123456789"
                                              "0123456789012345678901234567890123456789"
@@ -77,7 +85,7 @@ std::string TextField(const cJSON* object, const char* key, size_t max_chars) {
     if (!cJSON_IsString(item) || item->valuestring == nullptr) {
         return "";
     }
-    return SanitizeAscii(item->valuestring, max_chars);
+    return SanitizeText(item->valuestring, max_chars);
 }
 
 int RoundedInt(double value) { return static_cast<int>(std::lround(value)); }
@@ -137,7 +145,7 @@ bool ParseWeather(const std::string& json, const std::string& city, Weather& out
     }
 
     Weather weather;
-    weather.city = SanitizeAscii(city, 32);
+    weather.city = SanitizeText(city, 32);
     weather.temp_c = RoundedInt(temperature->valuedouble);
     weather.humidity = RoundedInt(humidity->valuedouble);
     weather.icon = WeatherIconFromWmo(static_cast<int>(code->valuedouble));
@@ -216,7 +224,7 @@ bool ParseRepos(const std::string& json, std::vector<Repo>& out) {
                 break;
             }
             if (cJSON_IsString(topic) && topic->valuestring != nullptr) {
-                repo.topics.push_back(SanitizeAscii(topic->valuestring, 24));
+                repo.topics.push_back(SanitizeText(topic->valuestring, 24));
             }
         }
         repos.push_back(std::move(repo));

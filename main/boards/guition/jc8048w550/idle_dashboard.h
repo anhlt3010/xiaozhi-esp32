@@ -14,6 +14,10 @@ struct DashboardFonts {
     const lv_font_t* temp;    // current temperature
     const lv_font_t* clock;   // HH:MM
     const lv_font_t* icon;    // Material Symbols (star, location)
+    // Text that comes from a web service (repo names and descriptions, the
+    // city). nullptr inherits the screen's font, which is the theme's text font
+    // (the assets' Noto/PuHui font) and follows it when the font is replaced.
+    const lv_font_t* text;
 };
 
 // What the display shows while idle: a card with the clock and the weather
@@ -42,7 +46,6 @@ private:
         lv_obj_t* badge = nullptr;
         lv_obj_t* rank = nullptr;
         lv_obj_t* name = nullptr;
-        lv_obj_t* description = nullptr;
         lv_obj_t* star = nullptr;
         lv_obj_t* stars = nullptr;
         IdleDashboard* owner = nullptr;
@@ -70,7 +73,7 @@ private:
     lv_obj_t* temp_ = nullptr;
     lv_obj_t* condition_ = nullptr;
     lv_obj_t* range_ = nullptr;
-    lv_obj_t* weather_status_ = nullptr;  // "no data" / "offline"
+    lv_obj_t* weather_status_ = nullptr;  // "loading..." / "no data" / "offline"
     lv_obj_t* days_ = nullptr;
     struct DayColumn {
         lv_obj_t* weekday = nullptr;
@@ -79,7 +82,7 @@ private:
     };
     std::array<DayColumn, 7> day_columns_;
 
-    lv_obj_t* repo_tag_ = nullptr;  // "no data" / "offline"
+    lv_obj_t* repo_tag_ = nullptr;  // "loading..." / "no data" / "offline"
     std::array<RepoRow, kRepoRows> rows_;
     std::vector<dashboard::Repo> repos_;
 

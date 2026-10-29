@@ -26,12 +26,12 @@
 #define TAG "JC8048W550Board"
 
 // Two-part layout for the 800x480 panel: the emotion in a 240px column on the
-// left, bottom-aligned, and a right panel that shows the conversation while
+// left, centred, and a right panel that shows the conversation while
 // talking and a board of info cards while idle.
 //
 // The stock chat UI registers no touch handler of its own, and the only
-// physical switch (BOOT) shares IO0 with the speaker's bit clock. A tap is the
-// only way to start talking.
+// physical switch (BOOT) shares IO0 with the speaker's bit clock. A tap on the
+// emotion column is the only way to start or stop talking.
 class JC8048W550Display : public RgbLcdDisplay {
 public:
     using RgbLcdDisplay::RgbLcdDisplay;
@@ -53,33 +53,10 @@ public:
         BuildRightPanel();
         RefreshRightPanel();
 
-        // LVGL delivers a click to the topmost clickable object under the
-        // finger. The right panel and its children are made non-clickable, so
-        // a tap lands on the container behind them; cover the screen, the
-        // container and (WeChat style only) the chat area.
-        for (lv_obj_t* obj : {lv_screen_active(), container_, content_}) {
-            if (obj == nullptr) {
-                continue;
-            }
-            lv_obj_add_flag(obj, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_add_event_cb(obj, OnTap, LV_EVENT_CLICKED, this);
-        }
-
-        // Chat bubbles are created per message after this runs; have them pass
-        // their events up to the chat area instead of swallowing the tap.
-        if (content_ != nullptr) {
-            lv_obj_add_event_cb(
-                content_,
-                [](lv_event_t* e) {
-                    lv_obj_t* chat = static_cast<lv_obj_t*>(lv_event_get_user_data(e));
-                    uint32_t count = lv_obj_get_child_cnt(chat);
-                    if (count > 0) {
-                        lv_obj_add_flag(lv_obj_get_child(chat, count - 1),
-                                        LV_OBJ_FLAG_EVENT_BUBBLE);
-                    }
-                },
-                LV_EVENT_CHILD_CREATED, content_);
-        }
+        // Only the emotion column starts and stops listening. The emotion
+        // image and glyph are not clickable, so a tap on them lands on the box.
+        lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(emoji_box_, OnTap, LV_EVENT_CLICKED, this);
     }
 
     bool SetEmotion(const char* emotion) override {
@@ -230,8 +207,6 @@ private:
         Application::GetInstance().ToggleChatState();
     }
 
-    // The theme's own background replaced by this board's fixed one; redone
-    // after every theme change because the base class resets it.
     // RgbLcdDisplay leaves LVGL with only the 1 MB base pool. The 240x240 emoji
     // GIFs need about 300 KB each, so changing emotion during a conversation
     // exhausted it and the emoji disappeared. Add PSRAM pools, one per
@@ -250,6 +225,8 @@ private:
                  static_cast<unsigned>(kExtraPools * LV_MEM_SIZE / 1024));
     }
 
+    // The theme's own background replaced by this board's fixed one; redone
+    // after every theme change because the base class resets it.
     void ApplyBackground() {
         const lv_color_t background = lv_color_hex(kBackgroundColor);
         for (lv_obj_t* obj : {lv_screen_active(), container_, top_bar_, bottom_bar_}) {
@@ -288,14 +265,14 @@ private:
     }
 
     // Left column: as wide as the emotion may be and as tall as the screen,
-    // with the emotion image or glyph on its bottom edge.
+    // with the emotion image or glyph centred in it. The column is also the
+    // touch target that toggles listening (see SetupUI).
     void LayoutEmojiColumn() {
         lv_obj_set_size(emoji_box_, kEmojiSize, height_);
         lv_obj_align(emoji_box_, LV_ALIGN_BOTTOM_LEFT, 0, 0);
         lv_obj_remove_flag(emoji_box_, LV_OBJ_FLAG_SCROLLABLE);
-        PassTaps(emoji_box_);
         lv_obj_set_flex_flow(emoji_box_, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_flex_align(emoji_box_, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER,
+        lv_obj_set_flex_align(emoji_box_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
     }
 
@@ -349,7 +326,7 @@ private:
         // detail overlay on the whole right panel.
         DashboardFonts fonts = {&lv_font_montserrat_16, &lv_font_montserrat_20,
                                 &lv_font_montserrat_28, &lv_font_montserrat_40,
-                                theme->icon_font()->font()};
+                                theme->icon_font()->font(), nullptr};
         dashboard_ =
             std::make_unique<IdleDashboard>(info_panel_, right_panel_, panel_width_, fonts);
         if (has_snapshot_) {
